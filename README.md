@@ -1,6 +1,7 @@
 # Phi-Net: 3D Convolutional Neural Network Implemented with Keras
 ## Background
-Classifying modalities in magnetic resonance brain imaging with deep learning.
+Adapted from github.com/sremedios/phinet by Sneha Lingam for LVO project 
+Classifying modalities in brain imaging with deep learning
 
 ## Directions:
 ### Directory Setup
@@ -59,11 +60,12 @@ scanner.
 
 Run `train.py` to train a classification model with some desired arguments.
 
-`--datadir`: Path to where the unprocessed data is
+`--traindir`: Path to where the preprocessed training data is
+`--valdir`: Path to where the preprocessed validation data is
 
 `--classes`: comma-separated list of classes, case-sensitive. This corresponds to the directory names in your provided `--datadir` directory
 
-`--weightdir`: Path to location where the weights and model will be saved
+`--outdir`: Path to location where the weights and model will be saved
 
 `--numcores`: Number of cores to use in parallel preprocessing:
 - 1 refers to 1 core
@@ -72,7 +74,7 @@ Run `train.py` to train a classification model with some desired arguments.
 - -2 refers to all but one core
 
 Example usage:
-`python train.py --traindir data/train/ --classes my_class_1,my_class_2 --weightdir weights/modality/ --numcores -1` 
+`python train.py --traindir data/train/ --valdir data/val/ --classes 0,1 --outdir models/mmddyy01/ --numcores -1` 
 
 ### Classify
 
@@ -97,7 +99,7 @@ Example usage:
 
 Run `validate.py` to validate the model on some holdout data for which the ground truth is known and record metrics with some desired arguments:
 
-`--datadir`: Path to where the unprocessed data is
+`--datadir`: Path to where the preprocessed data is
 
 `--classes`: comma-separated list of classes, case-sensitive. This corresponds to the directory names in your provided `--datadir` directory when the model was trained
 
@@ -117,34 +119,17 @@ Example usage:
 `python validate.py --task modality --datadir data/validation/ --model phinet_my_class_1-my_class_2.json --weights weights/modality/my_weights.hdf5 --results_dst validation_results/ --numcores -1 --classes my_class_1,my_class_2`
 
 ### Image Preprocessing
-Here are all the preprocessing steps which are automatically executed in `train.py`, `validate.py`, and `test.py`.
+Preprocessing is assumed to be performed beforehand. Steps include:
 
-All preprocessing code is located in `utils/utils.py`.
-
-First, all images are converted to 256x256x256 at 1mm^3 with intensities in [0,255]
-using FreeSurfer's `mri_convert`.
-
-Then all images are rotated into RAI orientation using AFNI `3dresample`.  While unnecessary,
-this allows for visual inspection of images learned by the model.
-
-Then each of these images will be run under fsl's `robustfov` to remove the necks.
-
-Finally all images are run under `3dWarp`, which aligns the images as well as downsamples them
-to 2mm^3 if necessary for RAM constraints.
-
-Before images are loaded into the neural network for training, they are linearly scaled to [0,1] to ease convergence.
-
-
-### Results from downsampled data (SPIE conference paper)
-{TODO}
-accuracy, training time, testing time
-
-### Improved, Current Results from 3D patches
-{TODO}
-accuracy, training time, testing time
+1) Use fsl's `robustfov` to remove the necks
+2) Use fsl's `flirt` to register to a common template
+3) Apply window level and width settings to look at soft tissue or contrast as appropriate
+4) Linearly scale to [0,1] to ease convergence
+- Optional: Generate maximum intensity projection (MIP)
+- Optional: Strip skull following steps from https://github.com/muschellij2/CT_BET/blob/master/Skull_Strip_Paper/CT_Skull_Strip_Example.sh
 
 ### References
 The associated paper is available on ResearchGate: `https://www.researchgate.net/publication/323440662_Classifying_magnetic_resonance_image_modalities_with_convolutional_neural_networks`
 
-If this is used, please cite our work:
+If this is used, please cite:
 Samuel Remedios, Dzung L. Pham, John A. Butman, Snehashis Roy, "Classifying magnetic resonance image modalities with convolutional neural networks," Proc. SPIE 10575, Medical Imaging 2018: Computer-Aided Diagnosis, 105752I (27 February 2018); doi: 10.1117/12.2293943

@@ -2,6 +2,9 @@
 Samuel Remedios
 NIH CC CNRM
 Data processing script
+
+==> adapted by Sneha Lingam
+Train PhiNet with data that was previously preprocessed
 '''
 
 import os
@@ -16,7 +19,7 @@ import numpy as np
 import nibabel as nib
 import sys
 from datetime import datetime
-from keras.utils import to_categorical
+from keras.utils import to_categorical, Sequence
 from sklearn.utils import shuffle
 
 os.environ['FSLOUTPUTTYPE'] = 'NIFTI_GZ'
@@ -35,13 +38,19 @@ def parse_args(session):
         description="Arguments for Training and Testing")
 
     if session == "train":
-        parser.add_argument('--datadir', required=True, action='store', dest='TRAIN_DIR',
-                            help='Where the initial unprocessed data is')
-        parser.add_argument('--weightdir', required=True, action='store', dest='OUT_DIR',
-                            help='Output directory where the trained models are written')
-        parser.add_argument('--numcores', required=True, action='store', dest='numcores',
-                            default='1', type=int,
-                            help='Number of cores to preprocess in parallel with')
+        # parser.add_argument('--datadir', required=True, action='store', dest='TRAIN_DIR',
+        #                     help='Where the initial data is')
+        parser.add_argument('--traindir', required=True, action='store', dest='TRAIN_DIR',
+                            help='Where the preprocessed training data is')
+        parser.add_argument('--valdir', required=True, action='store', dest='VAL_DIR',
+                            help='Where the preprocessed validation data is')
+        parser.add_argument('--outdir', required=True, action='store', dest='OUT_DIR',
+                            help='Output directory where the trained models and logs are written')
+        # parser.add_argument('--weightdir', required=True, action='store', dest='OUT_DIR',
+        #                     help='Output directory where the trained models and logs are written')
+        # parser.add_argument('--numcores', required=True, action='store', dest='numcores',
+        #                     default='1', type=int,
+        #                     help='Number of cores to preprocess in parallel with')
     elif session == "test":
         parser.add_argument('--infile', required=True, action='store', dest='INFILE',
                             help='Image to classify')
@@ -58,167 +67,28 @@ def parse_args(session):
                             help='Model Architecture (.json) file')
         parser.add_argument('--weights', required=True, action='store', dest='weights',
                             help='Learnt weights (.hdf5) file')
-        parser.add_argument('--result_dst', required=True, action='store', dest='OUT_DIR',
-                            help='Output directory where the results are written')
+        # parser.add_argument('--result_dst', required=True, action='store', dest='OUT_DIR',
+        #                     help='Output directory where the results are written')
         parser.add_argument('--result_file', required=True, action='store', dest='OUTFILE',
-                            help='Output directory where the results are written')
-        parser.add_argument('--numcores', required=True, action='store', dest='numcores',
-                            default='1', type=int,
-                            help='Number of cores to preprocess in parallel with')
+                            help='Output filename (e.g. result.csv) where the results are written')
+        # parser.add_argument('--numcores', required=True, action='store', dest='numcores',
+        #                     default='1', type=int,
+        #                     help='Number of cores to preprocess in parallel with')
     else:
         print("Invalid session. Must be one of \"train\", \"validate\", or \"test\"")
         sys.exit()
 
     parser.add_argument('--classes', required=True, action='store', dest='classes',
                         help='Comma separated list of all classes, CASE-SENSITIVE')
-    parser.add_argument('--gpuid', required=False, action='store', type=int, dest='GPUID',
-                        help='For a multi-GPU system, the trainng can be run on different GPUs.'
-                        'Use a GPU id (single number), eg: 1 or 2 to run on that particular GPU.'
-                        '0 indicates first GPU.  Optional argument. Default is the first GPU.')
-    parser.add_argument('--delete_preprocessed_dir', required=False, action='store', dest='clear',
-                        default='n', help='delete all temporary directories. Enter either y or n. Default is n.')
+    # parser.add_argument('--gpuid', required=False, action='store', type=int, dest='GPUID',
+    #                     help='For a multi-GPU system, the trainng can be run on different GPUs.'
+    #                     'Use a GPU id (single number), eg: 1 or 2 to run on that particular GPU.'
+    #                     '0 indicates first GPU.  Optional argument. Default is the first GPU.')
+    # parser.add_argument('--delete_preprocessed_dir', required=False, action='store', dest='clear',
+    #                     default='n', help='delete all temporary directories. Enter either y or n. Default is n.')
 
     return parser.parse_args()
 
-
-def preprocess(filename, outdir, tmpdir, reorient_script_path, robustfov_script_path, verbose=1):
-    '''
-    Preprocess a single file.
-    Can be used in parallel
-
-    Params:
-        - filename: string, path to file to preprocess
-        - outdir: string, path to destination directory to save preprocessed image
-        - tmpdir: string, path to tmp directory for intermediate steps
-        - reorient_script_path: string, path to bash script to reorient image
-        - robustfov_script_path: string, path to bash script to robustfov image
-        - verbose: int, if 0, surpress all output. If 1, display all output
-
-    Returns:
-        - string, name of new file in its new location
-    '''
-    if not os.path.exists(outdir):
-        os.makedirs(outdir)
-
-    basename = os.path.basename(filename)
-
-    # convert image to 256^3 1mm^3 coronal images with intensity range [0,255]
-    call = "mri_convert -odt uchar --crop 0 0 0 -c" + " " + filename + \
-        " " + os.path.join(tmpdir, basename)
-
-    if verbose == 0:
-        call = call + " " + ">/dev/null  2>&1"
-    os.system(call)
-
-    # reorient to RAI. Not necessary
-    # call = reorient_script_path + " " + \
-    #    os.path.join(tmpdir, basename) + " " + "RAI"
-    infile = os.path.join(tmpdir, basename)
-    outfile = os.path.join(tmpdir, "reorient_" + basename)
-    call = "3dresample -orient RAI -inset " + infile + " -prefix " + outfile
-    if verbose == 0:
-        call = call + " " + ">/dev/null  2>&1 "
-    os.system(call)
-
-    # robustfov to make sure neck isn't included
-    infile = os.path.join(tmpdir, "reorient_" + basename)
-    outfile = os.path.join(tmpdir, "robust_" + basename)
-    call = robustfov_script_path + " " + infile + " " +\
-        outfile + " " + "160"
-    if verbose == 0:
-        call = call + " " + ">/dev/null  2>&1"
-    os.system(call)
-
-    # 3dWarp to make images AC-PC aligned. Not necessary.  Ideally images should be
-    # rigid registered to some template for uniformity, but rigid registration is slow
-    # This is a faster way.  -newgrid 2 will resample the image to 2mm^3 resolution
-    infile = os.path.join(tmpdir, "robust_" + basename)
-    outfile = os.path.join(outdir, basename)
-    call = "3dWarp -deoblique -NN -newgrid 2 -prefix" + " " + outfile + " " + infile
-    if verbose == 0:
-        call = call + " " + ">/dev/null 2>&1"
-    os.system(call)
-
-    # since the intensities are already [0,255], change the file from float to uchar to save space
-    call = "fslmaths " + outfile + " " + outfile + " -odt char"
-    os.system(call)
-
-    # delete temporary files to save space, otherwise the temp directory takes more than 100GB
-    call = "rm -f " + os.path.join(tmpdir, basename)
-    os.system(call)
-    call = "rm -f " + os.path.join(tmpdir, "robust_" + basename)
-    os.system(call)
-
-    all_filenames = os.listdir(outdir)
-
-    new_name = basename
-    for f in all_filenames:
-        if os.path.basename(f) == basename:
-            new_name = f
-
-    return new_name
-
-
-def preprocess_dir(train_dir, preprocess_dir, reorient_script_path, robustfov_script_path, classes, ncores, verbose=0):
-    '''
-    Preprocesses all files in train_dir into preprocess_dir using prepreocess.sh
-
-    Params:
-        - train_dir: string, path to where all the training images are kept
-        - preprocess_dir: string, path to where all preprocessed images will be saved
-        - reorient_script_path: string, path to bash script to reorient image
-        - robustfov_script_path: string, path to bash script to robustfov image
-    '''
-    TMPDIR = os.path.join(
-        preprocess_dir, "tmp_intermediate_preprocessing_steps")
-
-    class_directories = [os.path.join(train_dir, x)
-                         for x in os.listdir(train_dir) if x != "preprocess"]
-    class_directories.sort()
-
-    print(classes)
-    num_classes = len(classes)
-
-    # preprocess all images
-    print("*** PREPROCESSING ***")
-    for class_dir in tqdm(class_directories):
-
-        if not os.path.basename(class_dir) in classes:
-            print("{} not in specified {}; omitting.".format(
-                os.path.basename(class_dir),
-                classes))
-            continue
-
-        if not os.path.exists(TMPDIR):
-            os.makedirs(TMPDIR)
-        preprocess_class_dir = os.path.join(
-            preprocess_dir, os.path.basename(class_dir))
-
-        if not os.path.exists(preprocess_class_dir):
-            os.makedirs(preprocess_class_dir)
-
-        if len(os.listdir(class_dir)) <= len(os.listdir(preprocess_class_dir)):
-            print("Already preprocessed.")
-            continue
-
-        filenames = [os.path.join(class_dir, x)
-                     for x in os.listdir(class_dir)]
-
-        # preprocess in parallel using all but one cores (n_jobs=-2)
-        Parallel(n_jobs=ncores)(delayed(preprocess)(filename=f,
-                                                    outdir=preprocess_class_dir,
-                                                    tmpdir=TMPDIR,
-                                                    reorient_script_path=reorient_script_path,
-                                                    robustfov_script_path=robustfov_script_path,
-                                                    verbose=verbose,)
-                                for f in filenames)
-
-        # remove the intermediate preprocessing steps at every iteration, otherwise
-        # disk usage goes beyond 100GB, with lots of training data
-        shutil.rmtree(TMPDIR)
-    # If the preprocessed data already exists, delete tmp_intermediate_preprocessing_steps
-    if os.path.exists(TMPDIR):
-        shutil.rmtree(TMPDIR)
 
 
 def load_image(filename):
@@ -229,7 +99,6 @@ def load_image(filename):
     # linear scaling so all intensities are in [0,1]
     #return np.divide(img, MAX_VAL)
     return  img
-
 
 def get_classes(classes):
     '''
@@ -244,7 +113,6 @@ def get_classes(classes):
     class_encodings = {x: class_list[x] for x in range(len(class_list))}
 
     return class_encodings
-
 
 def load_data(data_dir, classes=None):
     '''
@@ -317,7 +185,7 @@ def load_data(data_dir, classes=None):
 
     img_shape = nib.load(all_filenames[0]).get_data().shape
     data = np.empty(shape=((len(all_filenames),) +
-                           img_shape + (1,)), dtype=np.uint8)
+                           img_shape + (1,)), dtype=np.float32)
 
     # shuffle data
     all_filenames = shuffle(all_filenames, random_state=0)
@@ -326,7 +194,7 @@ def load_data(data_dir, classes=None):
 
     for f in tqdm(all_filenames):
         img = nib.load(f).get_data()
-        img = np.asarray(img, dtype=np.uint8)
+        img = np.asarray(img, dtype=np.float32)
 
         # place this image in its spot in the data array
         data[data_idx] = np.reshape(img, (1,)+img.shape+(1,))
@@ -340,6 +208,110 @@ def load_data(data_dir, classes=None):
     print(data.shape)
     print(labels.shape)
     return data, labels, all_filenames, num_classes, data[0].shape
+
+
+def prep_datagenerator(dir_files, classes):
+    '''
+    For a given directory stored in the below format,
+    prepares and returns parameters for DataGenerator class.
+    +-- data/
+    |   +-- train/
+    |   |   +-- /my_class_1
+    |   |   |   +-- my_class_1_file_1.nii.gz
+    |   |   |   +-- my_class_1_file_2.nii.gz
+    |   |   |   +-- my_class_1_file_n.nii.gz
+    |   |   +-- /my_class_2
+    |   |   |   +-- my_class_2_file_1.nii.gz
+    |   |   |   +-- my_class_2_file_2.nii.gz
+    |   |   |   +-- my_class_2_file_n.nii.gz
+    |   +-- validation/
+    |   |   +-- /my_class_1
+    |   |   |   +-- my_class_1_file_1.nii.gz
+    |   |   |   +-- my_class_1_file_2.nii.gz
+    |   |   |   +-- my_class_1_file_n.nii.gz
+    |   |   +-- /my_class_2
+    |   |   |   +-- my_class_2_file_1.nii.gz
+    |   |   |   +-- my_class_2_file_2.nii.gz
+    |   |   |   +-- my_class_2_file_n.nii.gz
+    '''
+    labels=dict()
+    for label in classes:
+        for x in os.walk(os.path.join(dir_files,label)):
+            labels.update(dict.fromkeys(x[2], label))
+    list_IDs = list(labels.keys())
+
+    img = nib.load(os.path.join(dir_files,labels[list_IDs[0]],list_IDs[0])).get_data()
+    dim = img.shape
+
+    return labels, list_IDs, dim
+
+class DataGenerator(Sequence):
+    '''
+    Generates batches of train or val data for Keras
+    '''
+
+    def __init__(self, dir_files, labels, list_IDs, n_classes=2, dim=(512,512,340),
+                 batch_size=8, n_channels=1, shuffle=True):
+        'Initialization'
+        self.dir_files = dir_files
+        self.batch_size = batch_size
+        self.n_channels = n_channels
+        self.shuffle = shuffle
+        self.labels = labels
+        self.list_IDs = list_IDs
+        self.n_classes = n_classes
+        self.on_epoch_end()
+        while len(dim)<3:
+            dim += (1,)
+        self.dim = dim
+
+    def __len__(self):
+        'Denotes # of batches per epoch'
+        return int(np.floor(len(self.list_IDs) / self.batch_size))
+
+    def __getitem__(self, index):
+        'Generate one batch of data'
+        # Generate indexes of the batch
+        indexes = self.indexes[index*self.batch_size:(index+1)*self.batch_size]
+
+        # Find list of files
+        list_IDs_temp = [self.list_IDs[k] for k in indexes]
+
+        # Generate data
+        X, y = self.__data_generation(list_IDs_temp)
+
+        return X, y
+
+    def on_epoch_end(self):
+        'Update indexes after each epoch'
+        self.indexes = np.arange(len(self.list_IDs))
+        if self.shuffle == True:
+            np.random.shuffle(self.indexes)
+        # print('\non_epoch_end called, indexes shuffled\n')
+
+    def __data_generation(self, list_IDs_temp):
+        'Generates data containing batch_size samples'
+        # Initialization
+        X = np.empty((self.batch_size, *self.dim, self.n_channels))
+        y = np.empty((self.batch_size), dtype=int)
+
+        # Generate data
+
+        for i, ID in enumerate(list_IDs_temp):
+
+            #Load and store image    callbacks_list.append(es)
+            fpath = os.path.join(self.dir_files,self.labels[ID],ID)
+            img = nib.load(fpath).get_data()
+            while len(img.shape)<4:
+                img = np.reshape(img, img.shape+(1,))
+            #img = np.reshape(img, img.shape+(1,))
+            img = np.asarray(img, dtype=np.float32)
+            X[i,] = img
+
+            #Store class
+            y[i] = self.labels[ID]
+
+        return X, to_categorical(y, num_classes=self.n_classes)
 
 
 def record_results(csv_filename, args):
@@ -372,7 +344,7 @@ def record_results(csv_filename, args):
                 "confidences": confidences,
             })
     else:
-        fieldnames = [
+        fieldnames = [# use_multiprocessing=True,
             "filename",
             "prediction",
             "confidences",
@@ -389,13 +361,11 @@ def record_results(csv_filename, args):
 
         with open(csv_filename, 'a') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writerow({
+            writer.writerow({# use_multiprocessing=True,
                 "filename": filename,
                 "prediction": prediction,
                 "confidences": confidences,
             })
-
-
 
 def now():
     '''
