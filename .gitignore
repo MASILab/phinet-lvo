@@ -1,8 +1,0 @@
-data/*
-sorting_example/*
-weights/*
-results/*
-*.swp
-__pycache__/*
-validation_results/*
-class_encodings.txt
